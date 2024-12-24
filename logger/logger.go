@@ -1,3 +1,31 @@
+// Package logger provides a high-performance, production-ready logging solution
+// with automatic file rotation, colored console output, and asynchronous writing.
+//
+// Features:
+// - Automatic log rotation based on file size or line count
+// - Multiple log levels with color-coded console output
+// - Asynchronous logging with buffered channels
+// - Stack trace support for error debugging
+// - Thread-safe operations
+// - Configurable buffer sizes and rotation settings
+//
+// Example usage:
+//
+//	err := logger.Initialize(logger.Config{
+//	    LogPath:     "storage/logs/app",
+//	    MaxFileSize: 100 * 1024 * 1024,
+//	    Level:       logger.DEBUG,
+//	    BufferSize:  500000,
+//	    IsDev:       true,
+//	    MaxLines:    100000,
+//	})
+//	if err != nil {
+//	    panic(err)
+//	}
+//	defer logger.Close()
+//
+//	logger.Info("Server started on port %d", 8080)
+//	logger.Error("Database error: %v", err)
 package logger
 
 import (
@@ -12,23 +40,23 @@ import (
 	"time"
 )
 
-// Log levels
+// Log levels define the severity of the log message
 const (
-	DEBUG = iota
-	INFO
-	WARN
-	ERROR
-	FATAL
+	DEBUG = iota // Detailed information for debugging
+	INFO         // General information about program execution
+	WARN         // Warning messages for potentially harmful situations
+	ERROR        // Error messages for serious problems
+	FATAL        // Critical errors that require immediate attention (exits program)
 )
 
-// ANSI color codes
+// ANSI color codes for console output
 const (
-	colorReset  = "\033[0m"
-	colorRed    = "\033[31m"
-	colorGreen  = "\033[32m"
-	colorYellow = "\033[33m"
-	colorBlue   = "\033[34m"
-	colorPurple = "\033[35m"
+	colorReset  = "\033[0m"  // Reset to default color
+	colorRed    = "\033[31m" // Error messages
+	colorGreen  = "\033[32m" // Info messages
+	colorYellow = "\033[33m" // Warning messages
+	colorBlue   = "\033[34m" // Debug messages
+	colorPurple = "\033[35m" // Fatal messages
 )
 
 // Level names for log output
@@ -57,6 +85,7 @@ var entryPool = sync.Pool{
 	},
 }
 
+// logEntry represents a single log message
 type logEntry struct {
 	level     int
 	msg       []byte
@@ -65,29 +94,31 @@ type logEntry struct {
 	timestamp int64
 }
 
-type Logger struct {
-	file         *os.File
-	level        int
-	logPath      string
-	maxSize      int64
-	currSize     int64
-	logChan      chan *logEntry
-	done         chan struct{}
-	wg           sync.WaitGroup
-	bufferSize   int
-	isDev        bool // Development mode flag
-	lineCount    int  // Current line count
-	maxLines     int  // Maximum lines per file
-	currentIndex int  // Current file index
-}
-
+// Config defines the configuration options for the logger
 type Config struct {
-	LogPath     string // Path to log file
+	LogPath     string // Base path for log files (without extension)
 	MaxFileSize int64  // Maximum size of log file in bytes before rotation
-	Level       int    // Minimum log level
+	Level       int    // Minimum log level to record
 	BufferSize  int    // Size of the log buffer channel
 	IsDev       bool   // Development mode (enables console output)
 	MaxLines    int    // Maximum lines per file before rotation (0 = no limit)
+}
+
+// Logger represents the core logger structure
+type Logger struct {
+	file         *os.File       // Current log file handle
+	level        int            // Current minimum log level
+	logPath      string         // Base path for log files
+	maxSize      int64          // Maximum file size before rotation
+	currSize     int64          // Current file size
+	logChan      chan *logEntry // Channel for async logging
+	done         chan struct{}  // Channel for shutdown signaling
+	wg           sync.WaitGroup // Wait group for graceful shutdown
+	bufferSize   int            // Size of the log buffer
+	isDev        bool           // Development mode flag
+	lineCount    int            // Current line count
+	maxLines     int            // Maximum lines per file
+	currentIndex int            // Current file index
 }
 
 var defaultLogger *Logger
@@ -170,6 +201,7 @@ func Initialize(config Config) error {
 	return nil
 }
 
+// processLogs is the main logging loop that processes log entries from the channel
 func (l *Logger) processLogs() {
 	defer l.wg.Done()
 
@@ -226,6 +258,7 @@ func (l *Logger) processLogs() {
 	}
 }
 
+// writeBatch writes a batch of log entries to the file
 func (l *Logger) writeBatch(entries []*logEntry) {
 	if len(entries) == 0 {
 		return
@@ -283,6 +316,7 @@ func (l *Logger) writeBatch(entries []*logEntry) {
 	}
 }
 
+// rotate rotates the log file to a new index
 func (l *Logger) rotate() error {
 	if err := l.file.Close(); err != nil {
 		return fmt.Errorf("failed to close current log file: %v", err)
@@ -306,6 +340,7 @@ func (l *Logger) rotate() error {
 	return nil
 }
 
+// log logs a message at the specified level
 func (l *Logger) log(level int, format string, args ...interface{}) {
 	if level < l.level {
 		return
