@@ -14,8 +14,19 @@ A high-performance, production-ready logging package for Go applications with au
 
 ## Installation
 
+To install the latest version:
+```bash
+go get github.com/jbarasa/logger@latest
+```
+
+To install a specific version:
 ```bash
 go get github.com/jbarasa/logger@v1.0.0
+```
+
+To update to the latest version in an existing project:
+```bash
+go get -u github.com/jbarasa/logger@latest
 ```
 
 ## Usage
@@ -101,3 +112,14 @@ GNU General Public License v3.0 - see LICENSE file for details
   - Multiple log levels
   - Async logging
   - Stack trace support
+
+## Versioning
+
+This project follows [Semantic Versioning](https://semver.org/). Version numbers are in the format MAJOR.MINOR.PATCH:
+- MAJOR version for incompatible API changes
+- MINOR version for added functionality in a backwards compatible manner
+- PATCH version for backwards compatible bug fixes
+
+To update to a new version in your project:
+1. Run `go get -u github.com/jbarasa/logger@latest` for the latest version
+2. Or specify a version: `go get github.com/jbarasa/logger@v1.0.2`
