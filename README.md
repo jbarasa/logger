@@ -4,14 +4,14 @@ A high-performance, production-ready logging package for Go applications with au
 
 ## Key Features
 
-- **Automatic Log Rotation**: Based on file size or line count
+- **Automatic Log Rotation**: Rotates logs when file size reaches 25MB (configurable)
+- **Organized Archive**: Rotated logs are stored in numbered files (1.log, 2.log, etc.)
 - **Colored Console Output**: Different colors for each log level
 - **Asynchronous Logging**: High-performance non-blocking operations
 - **Buffered Channels**: Configurable buffer size for optimal performance
 - **Stack Traces**: Detailed stack traces for error debugging
 - **Thread-Safe**: Safe for concurrent use
 - **Structured Format**: Consistent, easy-to-parse log format
-- **Configurable**: Flexible configuration options
 
 ## Installation
 
@@ -22,7 +22,7 @@ go get github.com/jbarasa/logger@latest
 
 To install a specific version:
 ```bash
-go get github.com/jbarasa/logger@v1.0.0
+go get github.com/jbarasa/logger@v1.0.2
 ```
 
 To update to the latest version in an existing project:
@@ -38,18 +38,16 @@ package main
 import (
     "github.com/jbarasa/logger/logger"
     "errors"
-    "time"
 )
 
 func main() {
     // Initialize logger with configuration
     err := logger.Initialize(logger.Config{
-        LogPath:     "storage/logs/app",  // Will create app.1.log, app.2.log, etc.
-        MaxFileSize: 100 * 1024 * 1024,   // 100MB
+        LogPath:     "storage/logs/app.log",
+        MaxFileSize: 25 * 1024 * 1024,    // 25MB
         Level:       logger.DEBUG,         // Minimum log level
         BufferSize:  500000,              // Channel buffer size
         IsDev:       true,                // Enable console output with colors
-        MaxLines:    100000,              // Rotate every 100K lines
     })
     if err != nil {
         panic(err)
@@ -68,34 +66,14 @@ func main() {
 }
 ```
 
-## Example Output
+## Log Format
 
 ### Console Output (Development Mode)
 ```
-[2024/12/25 02:45:40] [DEBUG] [main.go:25] Debug message: Starting application
-[2024/12/25 02:45:40] [INFO]  [main.go:26] Server started on port 8080
-[2024/12/25 02:45:40] [WARN]  [main.go:27] High memory usage: 85%
-[2024/12/25 02:45:40] [ERROR] [main.go:28] Failed to connect to database: connection timeout
-[2024/12/25 02:45:40] [ERROR] [main.go:31] Database operation failed
-Stack Trace:
-goroutine 1 [running]:
-main.main()
-    /path/to/main.go:31
-...
-```
-
-### Log File (app.1.log)
-```
-2024/12/25 02:45:40 [DEBUG] [main.go:25] Debug message: Starting application
-2024/12/25 02:45:40 [INFO]  [main.go:26] Server started on port 8080
-2024/12/25 02:45:40 [WARN]  [main.go:27] High memory usage: 85%
-2024/12/25 02:45:40 [ERROR] [main.go:28] Failed to connect to database: connection timeout
-2024/12/25 02:45:40 [ERROR] [main.go:31] Database operation failed
-Stack Trace:
-goroutine 1 [running]:
-main.main()
-    /path/to/main.go:31
-...
+2024/12/30 22:45:40 [DEBUG] [main.go:25] Debug message: Starting application
+2024/12/30 22:45:40 [INFO]  [main.go:26] Server started on port 8080
+2024/12/30 22:45:40 [WARN]  [main.go:27] High memory usage: 85%
+2024/12/30 22:45:40 [ERROR] [main.go:28] Failed to connect to database: connection timeout
 ```
 
 ### Log Colors (Console)
@@ -107,13 +85,13 @@ main.main()
 
 ## Configuration Options
 
-- `LogPath`: Base path for log files (without extension)
-  - Example: "storage/logs/app" creates app.1.log, app.2.log, etc.
-  - Files rotate automatically based on size or line count
+- `LogPath`: Path for the log file (with extension)
+  - Example: "storage/logs/app.log"
+  - When rotated, old logs move to "storage/logs/archive/N.log"
 
-- `MaxFileSize`: Maximum size of each log file before rotation (in bytes)
-  - Default: 100MB
-  - Example: `100 * 1024 * 1024` for 100MB
+- `MaxFileSize`: Maximum size of log file before rotation (in bytes)
+  - Default: 25MB (25 * 1024 * 1024 bytes)
+  - When reached, current log is moved to archive and new file is created
 
 - `Level`: Minimum log level to record
   - Available levels: DEBUG, INFO, WARN, ERROR, FATAL
@@ -127,36 +105,32 @@ main.main()
   - When true: Enables colored console output
   - When false: Logs only to files
 
-- `MaxLines`: Maximum number of lines per file before rotation
-  - Default: 100000
-  - Set to 0 to disable line-based rotation
-
 ## Log Rotation
 
-Logs are automatically rotated when either of these conditions is met:
-- File size exceeds MaxFileSize
-- Line count exceeds MaxLines
+Logs are automatically rotated when file size exceeds MaxFileSize. The rotation process:
+1. Current log file (app.log) reaches size limit
+2. File is moved to archive/1.log (or next available number)
+3. New empty app.log is created
+4. Logging continues to new file
 
-Files are named with incrementing indices:
+Archive structure:
 ```
-app.1.log  (current)
-app.2.log  (previous)
-app.3.log  (older)
-...
+storage/
+  └── logs/
+      ├── app.log     (current log file)
+      └── archive/
+          ├── 1.log   (oldest)
+          ├── 2.log
+          └── 3.log   (newest)
 ```
 
 ## Performance
 
-The logger uses asynchronous writing and buffering for optimal performance:
-- Non-blocking log calls (return immediately)
-- Buffered channel for log entries
+The logger uses several techniques for optimal performance:
+- Non-blocking log calls using buffered channels
 - Batch writing to improve I/O performance
-- Automatic file rotation without blocking
-
-Benchmark results on a typical system:
-- Over 100,000 log entries per second
-- Minimal impact on application performance
-- Memory efficient with configurable buffer sizes
+- Efficient file rotation with minimal locking
+- Memory-efficient buffer management
 
 ## Contributing
 
@@ -168,19 +142,16 @@ GNU General Public License v3.0 - see LICENSE file for details
 
 ## Version History
 
+- v1.0.2: (2024-12-30)
+  - Simplified log rotation with archive directory
+  - Fixed memory usage in file operations
+  - Improved thread safety
+  - Removed cleanup functionality in favor of simple rotation
+
+- v1.0.1: Bug fixes and performance improvements
+
 - v1.0.0: Initial release
-  - Automatic log rotation
+  - Basic logging functionality
   - Multiple log levels
   - Async logging
   - Stack trace support
-
-## Versioning
-
-This project follows [Semantic Versioning](https://semver.org/). Version numbers are in the format MAJOR.MINOR.PATCH:
-- MAJOR version for incompatible API changes
-- MINOR version for added functionality in a backwards compatible manner
-- PATCH version for backwards compatible bug fixes
-
-To update to a new version in your project:
-1. Run `go get -u github.com/jbarasa/logger@latest` for the latest version
-2. Or specify a version: `go get github.com/jbarasa/logger@v1.0.2`

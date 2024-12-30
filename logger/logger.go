@@ -1,23 +1,25 @@
 // Package logger provides a high-performance, production-ready logging solution
-// with automatic file rotation, colored console output, and asynchronous writing.
+// with automatic log cleanup, colored console output, and asynchronous writing.
+//
+// Version: 1.0.2
 //
 // Features:
-// - Automatic log rotation based on file size or line count
+// - Automatic cleanup of logs older than 1 month
 // - Multiple log levels with color-coded console output
 // - Asynchronous logging with buffered channels
 // - Stack trace support for error debugging
 // - Thread-safe operations
-// - Configurable buffer sizes and rotation settings
+// - Configurable buffer sizes
+// - Log file rotation with numbered backup files
 //
 // Example usage:
 //
 //	err := logger.Initialize(logger.Config{
-//	    LogPath:     "storage/logs/app",
-//	    MaxFileSize: 100 * 1024 * 1024,
-//	    Level:       logger.DEBUG,
-//	    BufferSize:  500000,
-//	    IsDev:       true,
-//	    MaxLines:    100000,
+//	    LogPath:    "storage/logs/app.log",
+//	    Level:      logger.DEBUG,
+//	    BufferSize: 500000,
+//	    IsDev:      true,
+//	    MaxFileSize: 25 * 1024 * 1024, // 25MB
 //	})
 //	if err != nil {
 //	    panic(err)
@@ -96,29 +98,26 @@ type logEntry struct {
 
 // Config defines the configuration options for the logger
 type Config struct {
-	LogPath     string // Base path for log files (without extension)
-	MaxFileSize int64  // Maximum size of log file in bytes before rotation
+	LogPath     string // Path for log file (with extension)
 	Level       int    // Minimum log level to record
 	BufferSize  int    // Size of the log buffer channel
 	IsDev       bool   // Development mode (enables console output)
-	MaxLines    int    // Maximum lines per file before rotation (0 = no limit)
+	MaxFileSize int64  // Maximum file size in bytes before rotation (default: 25MB)
 }
 
 // Logger represents the core logger structure
 type Logger struct {
-	file         *os.File       // Current log file handle
-	level        int            // Current minimum log level
-	logPath      string         // Base path for log files
-	maxSize      int64          // Maximum file size before rotation
-	currSize     int64          // Current file size
-	logChan      chan *logEntry // Channel for async logging
-	done         chan struct{}  // Channel for shutdown signaling
-	wg           sync.WaitGroup // Wait group for graceful shutdown
-	bufferSize   int            // Size of the log buffer
-	isDev        bool           // Development mode flag
-	lineCount    int            // Current line count
-	maxLines     int            // Maximum lines per file
-	currentIndex int            // Current file index
+	file       *os.File       // Current log file handle
+	level      int            // Current minimum log level
+	logPath    string         // Path for log file
+	logChan    chan *logEntry // Channel for async logging
+	done       chan struct{}  // Channel for shutdown signaling
+	wg         sync.WaitGroup // Wait group for graceful shutdown
+	bufferSize int            // Size of the log buffer
+	isDev      bool           // Development mode flag
+	maxSize    int64          // Maximum file size before rotation
+	currSize   int64          // Current file size
+	mu         sync.Mutex     // Mutex for file operations
 }
 
 var defaultLogger *Logger
@@ -127,71 +126,48 @@ var defaultLogger *Logger
 func Initialize(config Config) error {
 	if config.LogPath == "" {
 		pwd, _ := os.Getwd()
-		config.LogPath = filepath.Join(pwd, "storage", "logs", "app")
+		config.LogPath = filepath.Join(pwd, "storage", "logs", "app.log")
 	}
 
-	// Ensure the base path doesn't have an extension
-	ext := filepath.Ext(config.LogPath)
-	if ext != "" {
-		config.LogPath = strings.TrimSuffix(config.LogPath, ext)
+	// Create logs directory and archive subdirectory
+	logsDir := filepath.Dir(config.LogPath)
+	archiveDir := filepath.Join(logsDir, "archive")
+	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+		return fmt.Errorf("failed to create log directories: %v", err)
 	}
 
 	if config.BufferSize == 0 {
 		config.BufferSize = 100000
 	}
 
-	if config.MaxLines == 0 {
-		config.MaxLines = 100000 // Default to 100K lines per file
+	if config.MaxFileSize == 0 {
+		config.MaxFileSize = 25 * 1024 * 1024 // 25MB default
 	}
 
-	// Create logs directory
-	if err := os.MkdirAll(filepath.Dir(config.LogPath), 0755); err != nil {
-		return fmt.Errorf("failed to create log directory: %v", err)
-	}
-
-	// Get next available index
-	nextIndex := 1
-	baseDir := filepath.Dir(config.LogPath)
-	baseName := filepath.Base(config.LogPath)
-
-	files, err := os.ReadDir(baseDir)
-	if err == nil {
-		pattern := fmt.Sprintf("%s.*.log", baseName)
-		for _, f := range files {
-			if match, _ := filepath.Match(pattern, f.Name()); match {
-				parts := strings.Split(strings.TrimSuffix(f.Name(), ".log"), ".")
-				if len(parts) == 2 {
-					if idx, err := strconv.Atoi(parts[1]); err == nil {
-						if idx >= nextIndex {
-							nextIndex = idx + 1
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Open new log file with index
-	logPath := fmt.Sprintf("%s.%d.log", config.LogPath, nextIndex)
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	// Open log file
+	file, err := os.OpenFile(config.LogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %v", err)
 	}
 
+	// Get current file size
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return fmt.Errorf("failed to get file info: %v", err)
+	}
+
 	logger := &Logger{
-		file:         file,
-		level:        config.Level,
-		logPath:      config.LogPath, // Store without extension
-		maxSize:      config.MaxFileSize,
-		currSize:     0,
-		logChan:      make(chan *logEntry, config.BufferSize),
-		done:         make(chan struct{}),
-		wg:           sync.WaitGroup{},
-		bufferSize:   config.BufferSize,
-		isDev:        config.IsDev,
-		maxLines:     config.MaxLines,
-		lineCount:    0,
-		currentIndex: nextIndex,
+		file:       file,
+		level:      config.Level,
+		logPath:    config.LogPath,
+		logChan:    make(chan *logEntry, config.BufferSize),
+		done:       make(chan struct{}),
+		wg:         sync.WaitGroup{},
+		bufferSize: config.BufferSize,
+		isDev:      config.IsDev,
+		maxSize:    config.MaxFileSize,
+		currSize:   info.Size(),
 	}
 
 	defaultLogger = logger
@@ -278,10 +254,12 @@ func (l *Logger) writeBatch(entries []*logEntry) {
 			}
 		}
 
+		timeStr := time.Unix(0, entry.timestamp).Format("2006/01/02 15:04:05")
+
 		// Development mode: print to console with colors
 		if l.isDev {
 			fmt.Printf("%s [%s%s%s] [%s:%d] %s\n",
-				time.Unix(0, entry.timestamp).Format("2006/01/02 15:04:05"),
+				timeStr,
 				levelColors[entry.level],
 				levelNames[entry.level],
 				colorReset,
@@ -291,53 +269,85 @@ func (l *Logger) writeBatch(entries []*logEntry) {
 
 		// Always write to file with IDE-friendly path
 		fmt.Fprintf(buf, "%s [%s] [%s:%d] %s\n",
-			time.Unix(0, entry.timestamp).Format("2006/01/02 15:04:05"),
+			timeStr,
 			levelNames[entry.level],
 			relPath, entry.line,
 			entry.msg)
-
-		l.lineCount++
-		if l.lineCount >= l.maxLines {
-			l.rotate()
-			l.lineCount = 0
-		}
 	}
 
-	// Single write for entire batch
-	if n, err := l.file.Write(buf.Bytes()); err != nil {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Write to file
+	n, err := l.file.Write(buf.Bytes())
+	if err != nil {
 		if l.isDev {
 			fmt.Printf("Error writing to log file: %v\n", err)
 		}
-	} else {
-		l.currSize += int64(n)
-		if l.currSize >= l.maxSize {
-			l.rotate()
+		return
+	}
+
+	l.currSize += int64(n)
+	if l.currSize >= l.maxSize {
+		if err := l.rotate(); err != nil && l.isDev {
+			fmt.Printf("Error rotating log file: %v\n", err)
 		}
 	}
 }
 
-// rotate rotates the log file to a new index
+// rotate moves the current log file to the archive directory with a number
 func (l *Logger) rotate() error {
 	if err := l.file.Close(); err != nil {
 		return fmt.Errorf("failed to close current log file: %v", err)
 	}
 
-	// Increment index for next file
-	l.currentIndex++
+	// Get next archive number
+	nextNum, err := l.getNextArchiveNumber()
+	if err != nil {
+		return fmt.Errorf("failed to get next archive number: %v", err)
+	}
 
-	// Create new log file with index
-	newPath := fmt.Sprintf("%s.%d.log", l.logPath, l.currentIndex)
+	// Create archive path
+	archiveDir := filepath.Join(filepath.Dir(l.logPath), "archive")
+	archivePath := filepath.Join(archiveDir, fmt.Sprintf("%d.log", nextNum))
 
-	file, err := os.OpenFile(newPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	// Move current log to archive
+	if err := os.Rename(l.logPath, archivePath); err != nil {
+		return fmt.Errorf("failed to move log to archive: %v", err)
+	}
+
+	// Create new empty log file
+	file, err := os.OpenFile(l.logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to create new log file: %v", err)
 	}
 
 	l.file = file
 	l.currSize = 0
-	l.lineCount = 0
-
 	return nil
+}
+
+// getNextArchiveNumber gets the next available archive number
+func (l *Logger) getNextArchiveNumber() (int, error) {
+	archiveDir := filepath.Join(filepath.Dir(l.logPath), "archive")
+	files, err := os.ReadDir(archiveDir)
+	if err != nil {
+		return 1, err
+	}
+
+	maxNum := 0
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		name := file.Name()
+		if num, err := strconv.Atoi(strings.TrimSuffix(name, ".log")); err == nil {
+			if num > maxNum {
+				maxNum = num
+			}
+		}
+	}
+	return maxNum + 1, nil
 }
 
 // log logs a message at the specified level
